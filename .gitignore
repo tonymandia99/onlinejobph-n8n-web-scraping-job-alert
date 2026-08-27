@@ -1,0 +1,7 @@
+.env
+.env.*
+credentials.json
+secrets.json
+*.log
+.DS_Store
+Thumbs.db

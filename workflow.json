@@ -1,0 +1,621 @@
+{
+  "name": "Antonio - OnlineJobs.ph n8n + Web Scraping Job Alert",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-antonio-jobs",
+      "name": "Manual Test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1180,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger-antonio-jobs",
+      "name": "Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1180,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "config-telegram-chat-id",
+              "name": "telegram_chat_id",
+              "value": "REPLACE_WITH_YOUR_TELEGRAM_CHAT_ID",
+              "type": "string"
+            },
+            {
+              "id": "config-results-limit",
+              "name": "max_results_per_category",
+              "value": 3,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "configuration-antonio-jobs",
+      "name": "Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -940,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Configuration').first().json;\nconst session = $input.first().json;\nconst searches = [\n  { category: 'n8n automation', keyword: 'n8n automation' },\n  { category: 'web scraping and data extraction', keyword: 'web scraping' },\n];\n\nreturn searches.map((search) => ({\n  json: {\n    ...cfg,\n    ...search,\n    sessionId: session.sessionId,\n    search_url: `https://www.onlinejobs.ph/jobseekers/jobsearch?jobkeyword=${encodeURIComponent(search.keyword)}`,\n  },\n}));"
+      },
+      "id": "search-categories-antonio-jobs",
+      "name": "Search Categories",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        100
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "airtop-search-session",
+      "name": "Airtop Search Session",
+      "type": "n8n-nodes-base.airtop",
+      "typeVersion": 1,
+      "position": [
+        -700,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "window",
+        "sessionId": "={{ $json.sessionId }}",
+        "url": "={{ $('Search Categories').item.json.search_url }}",
+        "getLiveView": false,
+        "additionalFields": {}
+      },
+      "id": "airtop-search-window",
+      "name": "Open Live OLJ Search",
+      "type": "n8n-nodes-base.airtop",
+      "typeVersion": 1,
+      "position": [
+        -220,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "extraction",
+        "operation": "query",
+        "sessionId": "={{ $json.sessionId }}",
+        "windowId": "={{ $json.data.windowId }}",
+        "prompt": "Extract job cards only from the CURRENT live OnlineJobs.ph Find Jobs results page open in this browser window. Return ONLY a valid JSON array, with no markdown. Each object must have: title, url, employer, posted_or_updated_text, work_type, salary, and snippet. Include at most 3 results. Include only direct URLs on onlinejobs.ph whose path contains /jobseekers/job/. Prioritize the newest or recently updated results. Exclude jobs whose main work is AI video creation, video editing, YouTube automation, faceless-video production, or script-to-video production, even when n8n is mentioned. Do not invent missing values and do not use cached information.",
+        "additionalFields": {}
+      },
+      "id": "airtop-query-search-results",
+      "name": "Extract Live Search Results",
+      "type": "n8n-nodes-base.airtop",
+      "typeVersion": 1,
+      "position": [
+        20,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseJson(value) {\n  if (value && typeof value === 'object') return value;\n  if (typeof value !== 'string') return [];\n  const clean = value.trim().replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '');\n  try { return JSON.parse(clean); } catch {}\n  const start = clean.indexOf('[');\n  const end = clean.lastIndexOf(']');\n  if (start >= 0 && end > start) {\n    try { return JSON.parse(clean.slice(start, end + 1)); } catch {}\n  }\n  return [];\n}\n\nconst inputs = $input.all();\nconst searches = $('Search Categories').all();\nconst output = [];\n\nfor (let i = 0; i < inputs.length; i++) {\n  const raw = inputs[i].json;\n  const source = searches[i]?.json || {};\n  const modelResponse = raw?.data?.modelResponse ?? raw?.modelResponse ?? raw?.data?.result ?? raw?.result ?? raw;\n  const parsed = parseJson(modelResponse);\n  const rows = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.jobs) ? parsed.jobs : []);\n  const sessionId = raw.sessionId ?? raw?.data?.sessionId ?? '';\n\n  for (const row of rows.slice(0, Number(source.max_results_per_category || 5))) {\n    let url = String(row.url || '').trim();\n    if (url.startsWith('/')) url = `https://www.onlinejobs.ph${url}`;\n    if (!/^https:\\/\\/(?:www\\.)?onlinejobs\\.ph\\/jobseekers\\/job\\//i.test(url)) continue;\n    const roleText = `${row.title || ''} ${row.snippet || ''}`.toLowerCase();\n    const isAiVideoRole = /(ai[- ]?video|video editor|video editing|youtube automation|faceless[- ]?video|script[- ]?to[- ]?video|video content creator)/i.test(roleText);\n    if (isAiVideoRole) continue;\n    output.push({\n      json: {\n        kind: 'candidate',\n        category: source.category,\n        keyword: source.keyword,\n        url,\n        search_title: row.title || '',\n        search_employer: row.employer || '',\n        search_date: row.posted_or_updated_text || '',\n        search_work_type: row.work_type || '',\n        search_salary: row.salary || '',\n        search_snippet: row.snippet || '',\n        search_session_id: sessionId,\n      },\n    });\n  }\n}\n\nconst seen = new Set();\nconst unique = output.filter((item) => {\n  const key = item.json.url.toLowerCase();\n  if (seen.has(key)) return false;\n  seen.add(key);\n  return true;\n});\n\nreturn unique.length ? unique : [{ json: { kind: 'none', reason: 'No direct n8n-automation or web-scraping job links were extracted from the current live search results.' } }];"
+      },
+      "id": "parse-live-search-results",
+      "name": "Parse Search Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "candidate-condition",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "candidate",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-candidate",
+      "name": "Has Candidate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        500,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "window",
+        "sessionId": "={{ $json.search_session_id }}",
+        "url": "={{ $json.url }}",
+        "getLiveView": false,
+        "additionalFields": {}
+      },
+      "id": "airtop-detail-window",
+      "name": "Open Direct Job Page",
+      "type": "n8n-nodes-base.airtop",
+      "typeVersion": 1,
+      "position": [
+        740,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "extraction",
+        "operation": "query",
+        "sessionId": "={{ $json.sessionId }}",
+        "windowId": "={{ $json.data.windowId }}",
+        "prompt": "Verify this CURRENT OnlineJobs.ph direct job page and return ONLY one valid JSON object, with no markdown. Required fields: active_status (active, inactive, or uncertain), inactive_reason, title, employer, posted_or_updated_date, work_type, required_hours_original, required_hours_pht, schedule_fit (fit, flexible, needs_confirmation, or outside), salary, main_requirements (array), required_tools (array), special_subject_keyword, special_application_instructions, screening_questions (array), application_route (onlinejobs, external, or unknown), external_form_accessible (true, false, or null), and posting_summary. Candidate availability is 4:00 PM to 12:00 AM Philippine time. Mark schedule_fit outside if a confirmed shift falls outside that window; use needs_confirmation if no schedule/timezone is stated. Mark inactive if the page says expired, closed, filled, removed, unavailable, or no longer accepting applications. Mark uncertain when active application status cannot be verified. If an external form is required, set application_route to external. Do not guess missing facts.",
+        "additionalFields": {}
+      },
+      "id": "airtop-query-job-detail",
+      "name": "Verify and Extract Job Page",
+      "type": "n8n-nodes-base.airtop",
+      "typeVersion": 1,
+      "position": [
+        980,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseJson(value) {\n  if (value && typeof value === 'object') return value;\n  if (typeof value !== 'string') return null;\n  const clean = value.trim().replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '');\n  try { return JSON.parse(clean); } catch {}\n  const start = clean.indexOf('{');\n  const end = clean.lastIndexOf('}');\n  if (start >= 0 && end > start) {\n    try { return JSON.parse(clean.slice(start, end + 1)); } catch {}\n  }\n  return null;\n}\n\nfunction ageInDays(text) {\n  const value = String(text || '').trim();\n  if (!value) return null;\n  if (/\\btoday\\b/i.test(value)) return 0;\n  if (/\\byesterday\\b/i.test(value)) return 1;\n  const match = value.match(/(\\d+)\\s*(?:day|days)\\s*ago/i);\n  if (match) return Number(match[1]);\n  const parsed = Date.parse(value);\n  if (!Number.isFinite(parsed)) return null;\n  return (Date.now() - parsed) / 86400000;\n}\n\nconst details = $input.all();\nconst candidates = $('Parse Search Results').all();\nconst valid = [];\n\nfor (let i = 0; i < details.length; i++) {\n  const raw = details[i].json;\n  const candidate = candidates[i]?.json || {};\n  const modelResponse = raw?.data?.modelResponse ?? raw?.modelResponse ?? raw?.data?.result ?? raw?.result ?? raw;\n  const job = parseJson(modelResponse);\n  if (!job) continue;\n\n  const url = String(candidate.url || '');\n  const active = String(job.active_status || '').toLowerCase() === 'active';\n  const direct = /^https:\\/\\/(?:www\\.)?onlinejobs\\.ph\\/jobseekers\\/job\\//i.test(url);\n  const schedule = String(job.schedule_fit || '').toLowerCase();\n  const scheduleAllowed = ['fit', 'flexible', 'needs_confirmation'].includes(schedule);\n  const route = String(job.application_route || '').toLowerCase();\n  const appliesOnOlj = route === 'onlinejobs';\n  const age = ageInDays(job.posted_or_updated_date || candidate.search_date);\n  const fresh = age !== null && age >= -1 && age <= 7.99;\n\n  if (!active || !direct || !scheduleAllowed || !appliesOnOlj || !fresh) continue;\n\n  valid.push({\n    json: {\n      kind: 'verified_job',\n      category: candidate.category,\n      direct_link: url,\n      title: job.title || candidate.search_title || '',\n      employer: job.employer || candidate.search_employer || 'Not visible',\n      posted_or_updated_date: job.posted_or_updated_date || candidate.search_date || '',\n      work_type: job.work_type || candidate.search_work_type || '',\n      required_hours_original: job.required_hours_original || '',\n      required_hours_pht: job.required_hours_pht || (schedule === 'needs_confirmation' ? 'Needs confirmation' : ''),\n      schedule_fit: schedule,\n      salary: job.salary || candidate.search_salary || 'Not stated',\n      main_requirements: Array.isArray(job.main_requirements) ? job.main_requirements : [],\n      required_tools: Array.isArray(job.required_tools) ? job.required_tools : [],\n      special_subject_keyword: job.special_subject_keyword || '',\n      special_application_instructions: job.special_application_instructions || '',\n      screening_questions: Array.isArray(job.screening_questions) ? job.screening_questions : [],\n      posting_summary: job.posting_summary || candidate.search_snippet || '',\n      verified_active: true,\n      verified_at_pht: $now.setZone('Asia/Manila').toFormat('yyyy-MM-dd HH:mm'),\n    },\n  });\n}\n\nreturn valid.length ? valid : [{ json: { kind: 'none', reason: 'No newly posted, verified-active job passed the date, schedule, and application-route checks.' } }];"
+      },
+      "id": "validate-active-suitable-jobs",
+      "name": "Strict Active + Schedule Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "verified-job-condition",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "verified_job",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-active-suitable",
+      "name": "Active + Suitable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1700,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const state = $getWorkflowStaticData('global');\nstate.seenJobs = state.seenJobs || {};\nconst now = Date.now();\nconst keepMs = 90 * 24 * 60 * 60 * 1000;\n\nfor (const [url, record] of Object.entries(state.seenJobs)) {\n  if (!record || now - Number(record.seenAt || 0) > keepMs) delete state.seenJobs[url];\n}\n\nconst fresh = [];\nfor (const item of $input.all()) {\n  const job = item.json;\n  const url = String(job.direct_link || '').toLowerCase();\n  const fingerprint = JSON.stringify({\n    title: job.title,\n    date: job.posted_or_updated_date,\n    salary: job.salary,\n    work_type: job.work_type,\n    hours: job.required_hours_original,\n  });\n  if (state.seenJobs[url]?.fingerprint === fingerprint) continue;\n  state.seenJobs[url] = { fingerprint, seenAt: now };\n  fresh.push(item);\n}\n\nreturn fresh.length ? fresh : [{ json: { kind: 'none', reason: 'All suitable jobs were already reported and have no material update.' } }];"
+      },
+      "id": "deduplicate-across-runs",
+      "name": "Do Not Repeat Old Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "new-job-condition",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "verified_job",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-new-job",
+      "name": "New or Updated Job?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2180,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const job = $json;\n\nconst candidateProfile = {\n  name: 'Antonio Mandia Jr.',\n  education: 'BS Information Technology graduate',\n  current_role: 'Risk & Fraud Data Analyst',\n  strengths: [\n    'investigation and problem-solving',\n    'accuracy and attention to detail',\n    'Excel reporting',\n    'data security',\n    'testing and debugging',\n  ],\n  availability:\n    'Available remotely between 4:00 PM and 12:00 AM Philippine time.',\n  n8n_skills: [\n    'n8n',\n    'HTTP Request and API integrations',\n    'webhooks',\n    'JSON',\n    'JavaScript Code nodes',\n    'Switch and IF logic',\n    'data cleaning and transformation',\n    'deduplication',\n    'Google Sheets',\n    'Gmail',\n    'Telegram notifications',\n    'workflow testing and debugging',\n  ],\n  n8n_experience: [\n    'Multi-source job alert automation',\n    'RemoteOK API job tracker',\n    'AI lead qualification and CRM automation',\n  ],\n  n8n_portfolio: [\n    'https://tonymandia99.github.io/tonymandia999.github.io/',\n    'https://github.com/tonymandia99/AI-Lead-Qualification-CRM-Automation',\n  ],\n  scraping_skills: [\n    'Python',\n    'Selenium',\n    'Playwright',\n    'Requests',\n    'BeautifulSoup',\n    'Pandas',\n    'lxml',\n    'Openpyxl',\n    'pagination',\n    'retries and logging',\n    'proxy rotation',\n    'crash recovery',\n    'deduplication',\n    'SQL/MySQL',\n    'CSV and Excel output',\n    'VPS deployment',\n  ],\n  scraping_experience:\n    'Previously worked on a lead-generation pipeline that processed up to 10,000 verified insurance leads per day.',\n  do_not_claim: [\n    'GoHighLevel',\n    'Vapi',\n    'Retell AI',\n    'Supabase',\n    'advanced RAG',\n    'vector databases',\n    'production OAuth',\n    'tools or experience not supported by this profile',\n  ],\n};\n\nconst prompt = `\nAssess this verified OnlineJobs.ph job for Antonio Mandia Jr.\n\nReturn one short, Telegram-ready message in plain text. Do not submit an application.\n\nOUTPUT RULES:\n- Maximum total output: 2,200 characters.\n- Use simple, natural English and short sentences.\n- Do not use a table, emojis, hype, or repeated details.\n- Do not copy long parts of the posting or list every candidate skill.\n- Never invent experience, results, tools, or qualifications.\n\nUse this format:\n\nNEW JOB\n\nTitle: [job title]\nCompany: [employer or Not stated]\nLink: [direct OnlineJobs.ph link]\nUpdated: [date]\nType: [work type]\nSchedule: [Philippine time or Needs confirmation]\nSalary: [salary]\nRequirements: [maximum 3 short requirements]\n\nFit: [score]/10\nMatch: [maximum 5 relevant skills]\nGaps: [maximum 2 honest gaps]\nDecision: [APPLY NOW, CONSIDER, or SKIP]\n\nSUBJECT:\n[one short application subject]\n\nAPPLICATION:\n[short customized application message]\n\nAPPLICATION RULES:\n- Keep the application between 400 and 650 characters.\n- Start with \"Hi,\" or \"Hello,\" and end with \"Thank you, Antonio\".\n- Write like a real person speaking directly to the client.\n- Focus on what Antonio can do for this exact role.\n- Mention only 2 or 3 matching skills and one relevant result or project.\n- Use https://tonymandia99.github.io/tonymandia999.github.io/ as the primary portfolio link.\n- Include https://github.com/tonymandia99/AI-Lead-Qualification-CRM-Automation only when the employer asks for a specific n8n project or technical example.\n- For a scraping job, mention the 10,000 verified insurance leads per day experience when relevant.\n- Avoid generic phrases such as \"I am thrilled\", \"perfect fit\", \"leverage my expertise\", and \"I would be delighted\".\n- Do not mention an unproven skill gap unless it is an important requirement.\n- Follow required subject keywords and application instructions exactly.\n- Answer required screening questions briefly using verified facts only.\n- If required information is unavailable, write [NEEDS MANUAL INPUT].\n- Mention availability only when the schedule is relevant.\n\nCANDIDATE PROFILE:\n${JSON.stringify(candidateProfile)}\n\nVERIFIED JOB DATA:\n${JSON.stringify(job)}\n`.trim();\n\nreturn [{\n  json: {\n    ...job,\n    prompt,\n  },\n}];\n"
+      },
+      "id": "build-tailored-application-prompt",
+      "name": "Build Tailored Application Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "options": {
+          "systemMessage": "You are a careful job-match analyst and application writer. Use only facts supplied in the candidate profile and verified posting. Never invent professional experience. Preserve required subject keywords and application instructions exactly. Output plain text only."
+        }
+      },
+      "id": "generate-job-assessment",
+      "name": "Generate Subject + Application",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        2660,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "model": "qwen/qwen3.8-27b",
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "openai-chat-model-job-writer",
+      "name": "Groq Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        2660,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Configuration').first().json.telegram_chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "telegram-send-job-alert",
+      "name": "Send Job Alert to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2920,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Configuration').first().json.telegram_chat_id }}",
+        "text": "No new verified-active OnlineJobs.ph matches for n8n automation or web scraping in this run.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "telegram-no-new-jobs",
+      "name": "Send No New Jobs Update",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2420,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Setup before activation\n\n1. Add your **Airtop API credential** to all five Airtop nodes.\n2. Add your **Groq credential** to the Groq Chat Model node.\n3. Add your **Telegram credential** to both Telegram nodes.\n4. Replace `REPLACE_WITH_YOUR_TELEGRAM_CHAT_ID` in the Configuration node.\n5. Run **Manual Test** once, inspect the results, then activate the workflow.\n\nThe workflow runs every 6 hours, checks up to 3 results per category, and searches only **n8n automation** and **web scraping**. It verifies live search results and direct job pages, filters to posts from the last 7 days, rejects confirmed schedules outside 4 PM-12 AM Philippine time, remembers previously reported URLs during active scheduled runs, and creates a short tailored application draft. It never submits applications.",
+        "height": 460,
+        "width": 620,
+        "color": 5
+      },
+      "id": "setup-note",
+      "name": "READ ME - Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1180,
+        -480
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Test": {
+      "main": [
+        [
+          {
+            "node": "Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuration": {
+      "main": [
+        [
+          {
+            "node": "Airtop Search Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Airtop Search Session": {
+      "main": [
+        [
+          {
+            "node": "Search Categories",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Categories": {
+      "main": [
+        [
+          {
+            "node": "Open Live OLJ Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open Live OLJ Search": {
+      "main": [
+        [
+          {
+            "node": "Extract Live Search Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Live Search Results": {
+      "main": [
+        [
+          {
+            "node": "Parse Search Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Search Results": {
+      "main": [
+        [
+          {
+            "node": "Has Candidate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Candidate?": {
+      "main": [
+        [
+          {
+            "node": "Open Direct Job Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send No New Jobs Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open Direct Job Page": {
+      "main": [
+        [
+          {
+            "node": "Verify and Extract Job Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify and Extract Job Page": {
+      "main": [
+        [
+          {
+            "node": "Strict Active + Schedule Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Strict Active + Schedule Check": {
+      "main": [
+        [
+          {
+            "node": "Active + Suitable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Active + Suitable?": {
+      "main": [
+        [
+          {
+            "node": "Do Not Repeat Old Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send No New Jobs Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Do Not Repeat Old Jobs": {
+      "main": [
+        [
+          {
+            "node": "New or Updated Job?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New or Updated Job?": {
+      "main": [
+        [
+          {
+            "node": "Build Tailored Application Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send No New Jobs Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Tailored Application Prompt": {
+      "main": [
+        [
+          {
+            "node": "Generate Subject + Application",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Subject + Application": {
+      "main": [
+        [
+          {
+            "node": "Send Job Alert to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Generate Subject + Application",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila"
+  },
+  "tags": []
+}
