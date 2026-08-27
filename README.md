@@ -37,7 +37,11 @@ The workflow never submits a job application.
 - Produces a fit score, matching skills, honest gaps, subject, and short application
 - Uses a six-hour schedule and a maximum of three results per category to reduce free-tier errors
 - Excludes AI-video, video-editing, YouTube-automation, and faceless-video jobs
+## Telegram Output
 
+The workflow sends the verified job details, fit assessment, application subject, and customized application draft directly to Telegram.
+
+![Telegram job alert output](assets/outputtelegram.jpg)
 ## Tools Used
 
 - n8n
